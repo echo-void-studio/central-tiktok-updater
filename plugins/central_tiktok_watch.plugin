@@ -196,7 +196,7 @@ class CentralTikTokWatch(BasePlugin):
                 html = response.text
                 pages += 1
                 ids = [int(n) for n in re.findall(
-                    r'data-post=["\\\']CentralTikTok/(\\d+)["\\\']', html, re.I)]
+                    r'data-post="CentralTikTok/([0-9]+)"', html, re.I)]
                 posts_seen += len(ids)
                 found = parse_public_feed(html)
                 if found:
