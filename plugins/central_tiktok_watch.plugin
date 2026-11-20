@@ -13,7 +13,7 @@ __id__ = "central_tiktok_watch"
 __name__ = "Central TikTok Watch"
 __description__ = "Private Plus ARM8 updates in @CentralTikTok (no separate API credentials)."
 __author__ = "echo-void-studio"
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -83,7 +83,7 @@ class CentralTikTokWatch(BasePlugin):
 
     def create_settings(self):
         return [
-            Header(text="Central TikTok Watch (prototype 0.2.5)"),
+            Header(text="Central TikTok Watch (prototype 0.2.6)"),
             Switch(key="notifications_enabled", text="Уведомлять о новых версиях",
                    default=True),
             Switch(key="daily_fallback", text="Проверка публичной страницы раз в сутки",
@@ -210,36 +210,71 @@ class CentralTikTokWatch(BasePlugin):
         self._info("Тест отправлен. Проверь шторку и нажми «Проверить активное уведомление»")
 
     def _test_delayed_notification(self, view=None):
-        """Post after the settings UI settles; later check whether it survives."""
-        from android_utils import run_on_ui_thread
-        self.set_setting("notification_delayed", "Ожидание публикации 3 секунды…")
-        post = int(self.get_setting("last_post", 2336) or 2336)
+        """Log click immediately, then post and inspect a notification after delays."""
+        # Do this BEFORE scheduling imports. A missing SDK helper must not leave
+        # the status as "Не проверялось".
+        self.set_setting(
+            "notification_delayed",
+            "Нажатие получено. Планирую отправку через 3 с.",
+            reload_settings=True,
+        )
+        try:
+            from client_utils import GLOBAL_QUEUE
+            post_id = int(self.get_setting("last_post", 2336) or 2336)
 
-        def post_later():
-            self._notify("Отложенный тест", post, notification_id=47152)
-            self.set_setting("notification_delayed",
-                "Отправлено через 3 секунды. Проверяю через 4 секунды.")
+            def send_after_delay():
+                try:
+                    self._notify("Отложенный тест", post_id, notification_id=47152)
+                    outcome = str(self.get_setting("notification_result", "нет результата"))
+                    self.set_setting(
+                        "notification_delayed",
+                        "Отправка через 3 с: " + outcome[:110],
+                    )
+                except Exception as exc:
+                    self.set_setting(
+                        "notification_delayed",
+                        "Ошибка отправки: %s: %s" %
+                        (type(exc).__name__, str(exc)[:90]),
+                    )
+                    self.log("Delayed send failed: " + traceback.format_exc())
 
-        def inspect_later():
-            try:
-                from android.content import Context
-                from org.telegram.messenger import ApplicationLoader
-                ctx = ApplicationLoader.applicationContext
-                manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
-                active = list(manager.getActiveNotifications())
-                ours = [int(item.getId()) for item in active
-                        if int(item.getId()) in (47150, 47151, 47152)]
-                self.set_setting("notification_delayed",
-                    "Через 4 с: наших ID %s; всего %d" %
-                    (",".join(map(str, ours)) if ours else "НЕТ", len(active)))
-            except Exception as exc:
-                self.set_setting("notification_delayed",
-                    "Ошибка: %s: %s" % (type(exc).__name__, str(exc)[:80]))
-                self.log("Delayed scan failed: " + traceback.format_exc())
+            def inspect_after_delay():
+                try:
+                    from android.content import Context
+                    from org.telegram.messenger import ApplicationLoader
+                    ctx = ApplicationLoader.applicationContext
+                    manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
+                    active = list(manager.getActiveNotifications())
+                    ours = [int(item.getId()) for item in active
+                            if int(item.getId()) in (47150, 47151, 47152)]
+                    self.set_setting(
+                        "notification_delayed",
+                        "Через 7 с: наши ID %s; всего %d" %
+                        (",".join(map(str, ours)) if ours else "НЕТ",
+                         len(active)),
+                    )
+                except Exception as exc:
+                    self.set_setting(
+                        "notification_delayed",
+                        "Ошибка чтения: %s: %s" %
+                        (type(exc).__name__, str(exc)[:85]),
+                    )
+                    self.log("Delayed scan failed: " + traceback.format_exc())
 
-        run_on_ui_thread(post_later, 3000)
-        run_on_ui_thread(inspect_later, 7000)
-        self._info("Через 3 сек будет тест; не закрывай AyuGram 8 секунд")
+            # Use the documented background-queue helper, already used by the
+            # working manual channel check. Both delays are in milliseconds.
+            run_on_queue(send_after_delay, GLOBAL_QUEUE, 3000)
+            run_on_queue(inspect_after_delay, GLOBAL_QUEUE, 7000)
+            self._info("Тест запланирован. Через 8 с открой настройки снова.")
+        except Exception as exc:
+            self.set_setting(
+                "notification_delayed",
+                "ОШИБКА ЗАПУСКА: %s: %s" %
+                (type(exc).__name__, str(exc)[:110]),
+                reload_settings=True,
+            )
+            self.log("Delayed test startup failed: " + traceback.format_exc())
+            self._info("Ошибка запуска теста — смотри поле «Отложенный тест»")
 
     def _check_active_notification(self, view=None):
         """Read current notification state after the test; no changes to notifications."""
