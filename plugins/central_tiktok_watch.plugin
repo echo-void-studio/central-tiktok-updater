@@ -3,6 +3,7 @@ Detects Private Plus ARM8 APK releases; does not download/install APKs.
 """
 import re
 import time
+import traceback
 
 from base_plugin import BasePlugin, HookResult, MenuItemData, MenuItemType, AppEvent
 from client_utils import run_on_queue
@@ -12,7 +13,7 @@ __id__ = "central_tiktok_watch"
 __name__ = "Central TikTok Watch"
 __description__ = "Private Plus ARM8 updates in @CentralTikTok (no separate API credentials)."
 __author__ = "echo-void-studio"
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -78,7 +79,7 @@ class CentralTikTokWatch(BasePlugin):
             on_click=self._watch_from_message,
             icon="msg_info",
         ))
-        self.logger.info("CentralTikTokWatch loaded")
+        self.log("CentralTikTokWatch loaded")
 
     def create_settings(self):
         return [
@@ -125,7 +126,7 @@ class CentralTikTokWatch(BasePlugin):
                 self._info("Канал привязан. Выбери пост с нужным APK для базовой версии")
             self.set_setting("last_public_check", 0)
         except Exception:
-            self.logger.exception("Could not bind CentralTikTok channel")
+            self.log("Could not bind CentralTikTok channel: " + traceback.format_exc())
             self._info("Не удалось привязать канал, проверь журнал ошибок")
 
     def on_update_hook(self, update_name, account, update):
@@ -146,7 +147,7 @@ class CentralTikTokWatch(BasePlugin):
                 message_id = int(msg.id)
                 run_on_queue(lambda: self._accept(v, message_id, name))
         except Exception:
-            self.logger.exception("Telegram hook failed")
+            self.log("Telegram hook failed: " + traceback.format_exc())
         return HookResult()
 
     def on_app_event(self, event_type):
@@ -182,7 +183,7 @@ class CentralTikTokWatch(BasePlugin):
             else:
                 self._info("Не нашёл Private Plus ARM8 в публичных постах")
         except Exception:
-            self.logger.exception("Public check failed")
+            self.log("Public check failed: " + traceback.format_exc())
             self._info("Не удалось проверить публичную страницу")
 
     def _accept(self, version, message_id, filename):
@@ -193,18 +194,18 @@ class CentralTikTokWatch(BasePlugin):
                 return
             self.set_setting("last_version", version_text(version))
             self.set_setting("last_post", int(message_id))
-            self.logger.info("Found %s %s", filename, version_text(version))
+            self.log("Found %s %s" % (filename, version_text(version)))
             if self.get_setting("notifications_enabled", True):
                 self._notify(version_text(version), int(message_id))
         except Exception:
-            self.logger.exception("Could not store version")
+            self.log("Could not store version: " + traceback.format_exc())
 
     def _info(self, message):
         try:
             from ui.bulletin import BulletinHelper
             BulletinHelper.show_info(message)
         except Exception:
-            self.logger.info(message)
+            self.log(message)
 
     def _notify(self, version, message_id):
         try:
@@ -235,5 +236,5 @@ class CentralTikTokWatch(BasePlugin):
             builder.setAutoCancel(True)
             manager.notify(47150, builder.build())
         except Exception:
-            self.logger.exception("Android notification failed")
+            self.log("Android notification failed: " + traceback.format_exc())
             self._info("Private Plus ARM8 " + version + ": " + CHANNEL_URL)
