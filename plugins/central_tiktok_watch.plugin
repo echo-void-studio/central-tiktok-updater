@@ -13,7 +13,7 @@ __id__ = "central_tiktok_watch"
 __name__ = "Central TikTok Watch"
 __description__ = "Private Plus ARM8 updates in @CentralTikTok (no separate API credentials)."
 __author__ = "echo-void-studio"
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -83,7 +83,7 @@ class CentralTikTokWatch(BasePlugin):
 
     def create_settings(self):
         return [
-            Header(text="Central TikTok Watch (prototype 0.2.3)"),
+            Header(text="Central TikTok Watch (prototype 0.2.4)"),
             Switch(key="notifications_enabled", text="Уведомлять о новых версиях",
                    default=True),
             Switch(key="daily_fallback", text="Проверка публичной страницы раз в сутки",
@@ -96,8 +96,15 @@ class CentralTikTokWatch(BasePlugin):
                  subtext=str(self.get_setting("last_version", "Не задана"))),
             Text(text="Последний результат", subtext=str(self.get_setting(
                 "last_check_result", "Проверок ещё не было"))),
-            Text(text="Уведомления", subtext=str(self.get_setting(
-                "notification_result", "Не проверялись"))),
+            Header(text="Диагностика Android"),
+            Text(text="Результат отправки", subtext=str(self.get_setting(
+                "notification_result", "Не проверялось"))),
+            Text(text="Сразу после отправки", subtext=str(self.get_setting(
+                "notification_immediate", "Не проверялось"))),
+            Text(text="Повторная проверка", subtext=str(self.get_setting(
+                "notification_later", "Не проверялось"))),
+            Text(text="Канал и разрешение", subtext=str(self.get_setting(
+                "notification_permission", "Не проверялось"))),
             Text(text="Проверить сейчас", on_click=self._manual_check),
             Text(text="Тест уведомления", on_click=self._test_notification),
             Text(text="Проверить активное уведомление",
@@ -200,6 +207,7 @@ class CentralTikTokWatch(BasePlugin):
         self._info("Тест отправлен. Проверь шторку и нажми «Проверить активное уведомление»")
 
     def _check_active_notification(self, view=None):
+        """Read current notification state after the test; no changes to notifications."""
         try:
             from android.content import Context
             from android.os import Build
@@ -207,29 +215,29 @@ class CentralTikTokWatch(BasePlugin):
             ctx = ApplicationLoader.applicationContext
             manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
             channel_id = "central_tiktok_watch_alerts_v2"
+            allowed = bool(manager.areNotificationsEnabled()) if Build.VERSION.SDK_INT >= 24 else True
+            importance = -1
             if Build.VERSION.SDK_INT >= 26:
                 channel = manager.getNotificationChannel(channel_id)
-                importance = (int(channel.getImportance()) if channel is not None else -1)
-            else:
-                importance = -1
+                importance = int(channel.getImportance()) if channel is not None else -1
+            self.set_setting("notification_permission",
+                "Разрешено: %s; приоритет канала: %s" %
+                ("да" if allowed else "НЕТ", importance))
             if Build.VERSION.SDK_INT >= 23:
-                active = manager.getActiveNotifications()
-                found_ids = [int(item.getId()) for item in active
-                             if int(item.getId()) in (47150, 47151)]
-                count = len(active)
-                self.set_setting("notification_result",
-                    "Активных у AyuGram: %d; наши ID: %s; важность канала: %d; пакет: %s" %
-                    (count, str(found_ids), importance, str(ctx.getPackageName())))
-                self._info("Диагностика сохранена в поле «Уведомления»")
+                active = list(manager.getActiveNotifications())
+                ours = [int(item.getId()) for item in active
+                        if int(item.getId()) in (47150, 47151)]
+                self.set_setting("notification_later",
+                    "Всего: %d; наши: %s" %
+                    (len(active), ",".join(map(str, ours)) if ours else "НЕТ"))
             else:
-                self.set_setting("notification_result",
-                    "Android ниже 6.0: проверка активных уведомлений недоступна")
+                self.set_setting("notification_later", "Версия Android не поддерживает проверку")
+            self._info("Проверка завершена. Открой настройки плагина ещё раз.")
         except Exception as exc:
-            self.set_setting("notification_result",
-                "Ошибка проверки активных: %s: %s" %
-                (type(exc).__name__, str(exc)[:160]))
+            self.set_setting("notification_later",
+                "ОШИБКА %s: %s" % (type(exc).__name__, str(exc)[:75]))
             self.log("Active notification check failed: " + traceback.format_exc())
-            self._info("Ошибка диагностики — смотри поле «Уведомления»")
+            self._info("Диагностика завершилась ошибкой")
 
     def _open_notification_settings(self, view=None):
         try:
@@ -350,17 +358,35 @@ class CentralTikTokWatch(BasePlugin):
             pending = PendingIntent.getActivity(ctx, message_id, intent, flags)
             if Build.VERSION.SDK_INT < 26:
                 builder.setPriority(Notification.PRIORITY_HIGH)
-            builder.setSmallIcon(ctx.getApplicationInfo().icon)
+            # Telegram uses its own monochrome notification glyph. A launcher icon
+            # can be adaptive and unsupported as a status-bar notification small icon.
+            from org.telegram.messenger import R as TelegramR
+            icon_id = int(TelegramR.drawable.notification)
+            builder.setSmallIcon(icon_id)
             builder.setContentTitle("Private Plus ARM8: " + version)
             builder.setContentText("Новый APK в CentralTikTok — открыть пост")
             builder.setContentIntent(pending)
             builder.setAutoCancel(True)
-            manager.notify(notification_id, builder.build())
+            notif = builder.build()
+            manager.notify(notification_id, notif)
             self.set_setting("notification_result",
-                "Отправлено ID %d. Нажми «Проверить активное уведомление»." %
-                notification_id)
+                "notify() вернул управление; ID %d" % notification_id)
+            if Build.VERSION.SDK_INT >= 23:
+                try:
+                    active = list(manager.getActiveNotifications())
+                    current_ids = [int(item.getId()) for item in active]
+                    self.set_setting("notification_immediate",
+                        "Наш ID: %s; всего: %d; иконка: %d" %
+                        ("ЕСТЬ" if notification_id in current_ids else "НЕТ",
+                         len(current_ids), icon_id))
+                except Exception as scan_exc:
+                    self.set_setting("notification_immediate",
+                        "Ошибка чтения: " + str(scan_exc)[:80])
+            else:
+                self.set_setting("notification_immediate",
+                                 "Android ниже 6.0: недоступно")
         except Exception as exc:
             self.set_setting("notification_result",
-                "Ошибка %s: %s" % (type(exc).__name__, str(exc)[:180]))
+                "ОШИБКА %s: %s" % (type(exc).__name__, str(exc)[:110]))
             self.log("Android notification failed: " + traceback.format_exc())
             self._info("Ошибка системного уведомления — открой настройки плагина")
