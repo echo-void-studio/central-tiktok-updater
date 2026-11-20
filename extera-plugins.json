@@ -10,7 +10,7 @@
       "name": "Central TikTok Watch",
       "description": "Private Plus ARM8 updates in @CentralTikTok (no separate API credentials).",
       "author": "echo-void-studio",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "icon": "exteraPlugins/1",
       "app_version": ">=12.5.1",
       "sdk_version": ">=1.4.4.3",
@@ -18,8 +18,8 @@
         "tools"
       ],
       "file": "plugins/central_tiktok_watch.plugin",
-      "sha256": "dff2473248af6e1720580ed097b179077f052fb87e84d8d89d150a3b41049ad3",
-      "size": 20832
+      "sha256": "edd155f4e49cd48fba330be5d793f9c32a219775e014fc18b293fd46a65e4152",
+      "size": 22922
     }
   ]
 }
