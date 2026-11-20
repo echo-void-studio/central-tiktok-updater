@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "Central TikTok Updater",
+  "description": "Private Plus ARM8 updates watcher for AyuGram/exteraGram",
+  "author": "echo-void-studio",
+  "homepage": "https://github.com/echo-void-studio/central-tiktok-updater",
+  "plugins": [
+    {
+      "id": "central_tiktok_watch",
+      "name": "Central TikTok Watch",
+      "description": "Private Plus ARM8 updates in @CentralTikTok (no separate API credentials).",
+      "author": "echo-void-studio",
+      "version": "0.1.0",
+      "icon": "exteraPlugins/1",
+      "app_version": ">=12.5.1",
+      "sdk_version": ">=1.4.4.3",
+      "category": [
+        "tools"
+      ],
+      "file": "plugins/central_tiktok_watch.plugin",
+      "sha256": "10639c880d67a2c8ff6a6fcc422f9031877feadfb7217170eadf151680c142c0",
+      "size": 10903
+    }
+  ]
+}
