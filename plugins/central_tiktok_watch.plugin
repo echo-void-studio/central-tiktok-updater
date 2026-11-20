@@ -13,7 +13,7 @@ __id__ = "central_tiktok_watch"
 __name__ = "Central TikTok Watch"
 __description__ = "Private Plus ARM8 updates in @CentralTikTok (no separate API credentials)."
 __author__ = "echo-void-studio"
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -83,12 +83,15 @@ class CentralTikTokWatch(BasePlugin):
 
     def create_settings(self):
         return [
-            Header(text="Central TikTok Watch (prototype 0.1.0)"),
+            Header(text="Central TikTok Watch (prototype 0.2.1)"),
             Switch(key="notifications_enabled", text="Уведомлять о новых версиях",
                    default=True),
             Switch(key="daily_fallback", text="Проверка публичной страницы раз в сутки",
                    default=True, subtext="Только когда AyuGram запущен"),
-            Text(text="Канал", subtext=str(self.get_setting("watch_dialog", "Не привязан"))),
+            Text(text="Канал", subtext=(
+                "Привязан: " + str(self.get_setting("watch_dialog")) if
+                self.get_setting("watch_dialog") else
+                "@CentralTikTok (автопривязка при новом сообщении)")),
             Text(text="Последняя найденная версия",
                  subtext=str(self.get_setting("last_version", "Не задана"))),
             Text(text="Последний результат", subtext=str(self.get_setting(
@@ -113,7 +116,7 @@ class CentralTikTokWatch(BasePlugin):
                 self._info("Выбери пост канала @CentralTikTok")
                 return
             from client_utils import get_messages_controller
-            chat = get_messages_controller(account).getChat(-dialog)
+            chat = context.get("chat") or get_messages_controller(account).getChat(-dialog)
             username = str(getattr(chat, "username", "") or "").lstrip("@").lower()
             if username != "centraltiktok":
                 self._info("Выбери именно @CentralTikTok")
@@ -141,16 +144,28 @@ class CentralTikTokWatch(BasePlugin):
         try:
             expected = int(self.get_setting("watch_dialog", 0) or 0)
             expected_account = int(self.get_setting("watch_account", 0) or 0)
-            if expected >= 0 or account != expected_account:
-                return HookResult()
             msg = update.message
             channel = int(getattr(getattr(msg, "peer_id", None), "channel_id", 0) or 0)
-            if -channel != expected:
+            if not channel:
                 return HookResult()
+            if expected < 0:
+                if account != expected_account or -channel != expected:
+                    return HookResult()
+            else:
+                # First update from @CentralTikTok: bind automatically if cached.
+                from client_utils import get_messages_controller
+                chat = get_messages_controller(account).getChat(channel)
+                username = str(getattr(chat, "username", "") or "").lstrip("@").lower()
+                if username != "centraltiktok":
+                    return HookResult()
+                self.set_setting("watch_dialog", -channel)
+                self.set_setting("watch_account", account)
+                self.set_setting("last_check_result",
+                                 "Канал @CentralTikTok привязан автоматически")
             release = extract_release(msg)
             if release:
                 v, name = release
-                message_id = int(msg.id)
+                message_id = int(getattr(msg, "id", 0) or 0)
                 run_on_queue(lambda: self._accept(v, message_id, name))
         except Exception:
             self.log("Telegram hook failed: " + traceback.format_exc())
@@ -215,7 +230,7 @@ class CentralTikTokWatch(BasePlugin):
                 self._info("Найдена Private Plus ARM8 " + version_text(version))
             else:
                 message = ("APK Private Plus ARM8 не найден в %s постах (%s стр.). "
-                           "Проверка новых сообщений после привязки канала продолжит работать." %
+                           "Следующие сообщения @CentralTikTok будут проверяться в AyuGram." %
                            (posts_seen, pages))
                 self.set_setting("last_check_result", message)
                 self._info(message)
