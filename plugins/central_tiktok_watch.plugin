@@ -1,0 +1,239 @@
+"""Central TikTok Watch: experimental AyuGram/exteraGram plugin.
+Detects Private Plus ARM8 APK releases; does not download/install APKs.
+"""
+import re
+import time
+
+from base_plugin import BasePlugin, HookResult, MenuItemData, MenuItemType, AppEvent
+from client_utils import run_on_queue
+from ui.settings import Header, Switch, Text
+
+__id__ = "central_tiktok_watch"
+__name__ = "Central TikTok Watch"
+__description__ = "Private Plus ARM8 updates in @CentralTikTok (no separate API credentials)."
+__author__ = "echo-void-studio"
+__version__ = "0.1.0"
+__icon__ = "exteraPlugins/1"
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.4.3"
+__category__ = ["tools"]
+
+CHANNEL_URL = "https://t.me/CentralTikTok"
+PUBLIC_FEED = "https://t.me/s/CentralTikTok"
+CHECK_INTERVAL = 86400
+APK = re.compile(r"TikTok_Private_Plus_v(\d+(?:\.\d+){1,4})_\(MOD\)_arm8\.apk", re.I)
+
+def version_from_name(name):
+    found = APK.search(str(name or ""))
+    return tuple(map(int, found.group(1).split("."))) if found else None
+
+def version_text(version):
+    return ".".join(map(str, version)) if version else ""
+
+def attached_apk_name(msg):
+    try:
+        owner = getattr(msg, "messageOwner", msg)
+        doc = getattr(getattr(owner, "media", None), "document", None)
+        if not doc:
+            return None
+        for attr in doc.attributes:
+            name = getattr(attr, "file_name", None)
+            if name and name.lower().endswith(".apk"):
+                return name
+    except Exception:
+        pass
+    return None
+
+def extract_release(msg):
+    name = attached_apk_name(msg)
+    v = version_from_name(name)
+    return (v, name) if v else None
+
+def parse_public_feed(html):
+    """Scrape only actual Telegram document titles inside CentralTikTok posts."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    for post in soup.select(".tgme_widget_message[data-post]"):
+        post_ref = post.get("data-post", "")
+        if not post_ref.lower().startswith("centraltiktok/"):
+            continue
+        id_str = post_ref.split("/")[-1]
+        if not id_str.isdigit():
+            continue
+        for title in post.select(".tgme_widget_message_document_title"):
+            name = title.get_text(" ", strip=True)
+            v = version_from_name(name)
+            if v:
+                results.append((v, int(id_str), name))
+    return max(results, key=lambda item: (item[0], item[1])) if results else None
+
+class CentralTikTokWatch(BasePlugin):
+    def on_plugin_load(self):
+        self.add_hook("TL_updateNewChannelMessage")
+        self.add_hook("TL_updateEditChannelMessage")
+        self.add_menu_item(MenuItemData(
+            menu_type=MenuItemType.MESSAGE_CONTEXT_MENU,
+            text="Отслеживать Private Plus ARM8",
+            on_click=self._watch_from_message,
+            icon="msg_info",
+        ))
+        self.logger.info("CentralTikTokWatch loaded")
+
+    def create_settings(self):
+        return [
+            Header(text="Central TikTok Watch (prototype 0.1.0)"),
+            Switch(key="notifications_enabled", text="Уведомлять о новых версиях",
+                   default=True),
+            Switch(key="daily_fallback", text="Проверка публичной страницы раз в сутки",
+                   default=True, subtext="Только когда AyuGram запущен"),
+            Text(text="Канал", subtext=str(self.get_setting("watch_dialog", "Не привязан"))),
+            Text(text="Последняя найденная версия",
+                 subtext=str(self.get_setting("last_version", "Не задана"))),
+            Text(text="Проверить сейчас", on_click=self._manual_check),
+            Text(text="Тест уведомления", on_click=self._test_notification),
+        ]
+
+    def _watch_from_message(self, context):
+        msg = context.get("message")
+        if not msg:
+            self._info("Открой сообщение с Private Plus ARM8 APK")
+            return
+        try:
+            owner = getattr(msg, "messageOwner", msg)
+            channel = int(getattr(getattr(owner, "peer_id", None), "channel_id", 0) or 0)
+            dialog = int(context.get("dialog_id") or (-channel if channel else 0))
+            account = int(context.get("account", 0) or 0)
+            if dialog >= 0:
+                self._info("Выбери пост канала @CentralTikTok")
+                return
+            from client_utils import get_messages_controller
+            chat = get_messages_controller(account).getChat(-dialog)
+            username = str(getattr(chat, "username", "") or "").lstrip("@").lower()
+            if username != "centraltiktok":
+                self._info("Выбери именно @CentralTikTok")
+                return
+            self.set_setting("watch_dialog", dialog)
+            self.set_setting("watch_account", account)
+            release = extract_release(msg)
+            if release:
+                v, _ = release
+                self.set_setting("last_version", version_text(v))
+                self.set_setting("last_post", int(msg.getId()))
+                self._info("Канал привязан, базовая версия: " + version_text(v))
+            else:
+                self._info("Канал привязан. Выбери пост с нужным APK для базовой версии")
+            self.set_setting("last_public_check", 0)
+        except Exception:
+            self.logger.exception("Could not bind CentralTikTok channel")
+            self._info("Не удалось привязать канал, проверь журнал ошибок")
+
+    def on_update_hook(self, update_name, account, update):
+        if update_name not in ("TL_updateNewChannelMessage", "TL_updateEditChannelMessage"):
+            return HookResult()
+        try:
+            expected = int(self.get_setting("watch_dialog", 0) or 0)
+            expected_account = int(self.get_setting("watch_account", 0) or 0)
+            if expected >= 0 or account != expected_account:
+                return HookResult()
+            msg = update.message
+            channel = int(getattr(getattr(msg, "peer_id", None), "channel_id", 0) or 0)
+            if -channel != expected:
+                return HookResult()
+            release = extract_release(msg)
+            if release:
+                v, name = release
+                message_id = int(msg.id)
+                run_on_queue(lambda: self._accept(v, message_id, name))
+        except Exception:
+            self.logger.exception("Telegram hook failed")
+        return HookResult()
+
+    def on_app_event(self, event_type):
+        if event_type not in (AppEvent.START, AppEvent.RESUME):
+            return
+        if not self.get_setting("daily_fallback", True):
+            return
+        if not self.get_setting("watch_dialog", None):
+            return
+        now = int(time.time())
+        last = int(self.get_setting("last_public_check", 0) or 0)
+        if now - last >= CHECK_INTERVAL:
+            self.set_setting("last_public_check", now)
+            run_on_queue(self._check_public)
+
+    def _manual_check(self, view=None):
+        self._info("Проверяю CentralTikTok...")
+        run_on_queue(self._check_public)
+
+    def _test_notification(self, view=None):
+        post = int(self.get_setting("last_post", 2336) or 2336)
+        run_on_queue(lambda: self._notify("Тест", post))
+
+    def _check_public(self):
+        try:
+            import requests
+            response = requests.get(PUBLIC_FEED, timeout=15,
+                headers={"User-Agent": "Mozilla/5.0 (Android; CentralTikTokWatch/0.1)"})
+            response.raise_for_status()
+            found = parse_public_feed(response.text)
+            if found:
+                self._accept(*found)
+            else:
+                self._info("Не нашёл Private Plus ARM8 в публичных постах")
+        except Exception:
+            self.logger.exception("Public check failed")
+            self._info("Не удалось проверить публичную страницу")
+
+    def _accept(self, version, message_id, filename):
+        try:
+            old = str(self.get_setting("last_version", "") or "")
+            previous = tuple(map(int, old.split("."))) if old else ()
+            if previous and version <= previous:
+                return
+            self.set_setting("last_version", version_text(version))
+            self.set_setting("last_post", int(message_id))
+            self.logger.info("Found %s %s", filename, version_text(version))
+            if self.get_setting("notifications_enabled", True):
+                self._notify(version_text(version), int(message_id))
+        except Exception:
+            self.logger.exception("Could not store version")
+
+    def _info(self, message):
+        try:
+            from ui.bulletin import BulletinHelper
+            BulletinHelper.show_info(message)
+        except Exception:
+            self.logger.info(message)
+
+    def _notify(self, version, message_id):
+        try:
+            from android.app import Notification, NotificationChannel, NotificationManager, PendingIntent
+            from android.content import Context, Intent
+            from android.net import Uri
+            from android.os import Build
+            from org.telegram.messenger import ApplicationLoader
+            ctx = ApplicationLoader.applicationContext
+            manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
+            channel_id = "central_tiktok_watch_updates"
+            if Build.VERSION.SDK_INT >= 26:
+                manager.createNotificationChannel(NotificationChannel(
+                    channel_id, "TikTok Private Plus updates", NotificationManager.IMPORTANCE_DEFAULT))
+                builder = Notification.Builder(ctx, channel_id)
+            else:
+                builder = Notification.Builder(ctx)
+            intent = Intent(Intent.ACTION_VIEW, Uri.parse(CHANNEL_URL + "/" + str(message_id)))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            flags = PendingIntent.FLAG_UPDATE_CURRENT
+            if Build.VERSION.SDK_INT >= 23:
+                flags |= PendingIntent.FLAG_IMMUTABLE
+            pending = PendingIntent.getActivity(ctx, message_id, intent, flags)
+            builder.setSmallIcon(ctx.getApplicationInfo().icon)
+            builder.setContentTitle("Private Plus ARM8: " + version)
+            builder.setContentText("Новый APK в CentralTikTok — открыть пост")
+            builder.setContentIntent(pending)
+            builder.setAutoCancel(True)
+            manager.notify(47150, builder.build())
+        except Exception:
+            self.logger.exception("Android notification failed")
+            self._info("Private Plus ARM8 " + version + ": " + CHANNEL_URL)
