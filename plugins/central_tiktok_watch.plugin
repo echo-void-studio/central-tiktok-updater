@@ -13,7 +13,7 @@ __id__ = "central_tiktok_watch"
 __name__ = "Central TikTok Watch"
 __description__ = "Private Plus ARM8 updates in @CentralTikTok (no separate API credentials)."
 __author__ = "echo-void-studio"
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -91,6 +91,10 @@ class CentralTikTokWatch(BasePlugin):
             Text(text="Канал", subtext=str(self.get_setting("watch_dialog", "Не привязан"))),
             Text(text="Последняя найденная версия",
                  subtext=str(self.get_setting("last_version", "Не задана"))),
+            Text(text="Последний результат", subtext=str(self.get_setting(
+                "last_check_result", "Проверок ещё не было"))),
+            Text(text="Уведомления", subtext=str(self.get_setting(
+                "notification_result", "Не проверялись"))),
             Text(text="Проверить сейчас", on_click=self._manual_check),
             Text(text="Тест уведомления", on_click=self._test_notification),
         ]
@@ -115,6 +119,7 @@ class CentralTikTokWatch(BasePlugin):
                 self._info("Выбери именно @CentralTikTok")
                 return
             self.set_setting("watch_dialog", dialog)
+            self.set_setting("last_check_result", "Канал привязан. Можно проверить сейчас.")
             self.set_setting("watch_account", account)
             release = extract_release(msg)
             if release:
@@ -125,9 +130,10 @@ class CentralTikTokWatch(BasePlugin):
             else:
                 self._info("Канал привязан. Выбери пост с нужным APK для базовой версии")
             self.set_setting("last_public_check", 0)
-        except Exception:
+        except Exception as exc:
+            self.set_setting("last_check_result", "Ошибка привязки: " + str(exc)[:130])
             self.log("Could not bind CentralTikTok channel: " + traceback.format_exc())
-            self._info("Не удалось привязать канал, проверь журнал ошибок")
+            self._info("Ошибка привязки. Подробности — в настройках.")
 
     def on_update_hook(self, update_name, account, update):
         if update_name not in ("TL_updateNewChannelMessage", "TL_updateEditChannelMessage"):
@@ -164,27 +170,61 @@ class CentralTikTokWatch(BasePlugin):
             run_on_queue(self._check_public)
 
     def _manual_check(self, view=None):
+        self.set_setting("last_check_result", "Проверка запущена…")
         self._info("Проверяю CentralTikTok...")
         run_on_queue(self._check_public)
 
     def _test_notification(self, view=None):
+        self.set_setting("notification_result", "Запускается тест…")
         post = int(self.get_setting("last_post", 2336) or 2336)
-        run_on_queue(lambda: self._notify("Тест", post))
+        self._notify("Тест", post)
+        self._info("Результат теста сохранён в настройках")
 
     def _check_public(self):
         try:
             import requests
-            response = requests.get(PUBLIC_FEED, timeout=15,
-                headers={"User-Agent": "Mozilla/5.0 (Android; CentralTikTokWatch/0.1)"})
-            response.raise_for_status()
-            found = parse_public_feed(response.text)
+            posts_seen = 0
+            before_id = None
+            found = None
+            pages = 0
+            for _ in range(6):
+                params = {"before": before_id} if before_id else {}
+                response = requests.get(
+                    PUBLIC_FEED, params=params, timeout=15,
+                    headers={"User-Agent": "Mozilla/5.0 (Android; CentralTikTokWatch/0.2)"})
+                response.raise_for_status()
+                html = response.text
+                pages += 1
+                ids = [int(n) for n in re.findall(
+                    r'data-post=["\\\']CentralTikTok/(\\d+)["\\\']', html, re.I)]
+                posts_seen += len(ids)
+                found = parse_public_feed(html)
+                if found:
+                    break
+                next_before = min(ids) if ids else None
+                if not next_before or (before_id is not None and next_before >= before_id):
+                    break
+                before_id = next_before
             if found:
-                self._accept(*found)
+                version, message_id, filename = found
+                self.set_setting(
+                    "last_check_result",
+                    "Найдена версия %s; пост %s; просмотрено %s постов" %
+                    (version_text(version), message_id, posts_seen))
+                self._accept(version, message_id, filename)
+                self._info("Найдена Private Plus ARM8 " + version_text(version))
             else:
-                self._info("Не нашёл Private Plus ARM8 в публичных постах")
-        except Exception:
+                message = ("APK Private Plus ARM8 не найден в %s постах (%s стр.). "
+                           "Проверка новых сообщений после привязки канала продолжит работать." %
+                           (posts_seen, pages))
+                self.set_setting("last_check_result", message)
+                self._info(message)
+        except Exception as exc:
+            self.set_setting(
+                "last_check_result", "Ошибка %s: %s" %
+                (type(exc).__name__, str(exc)[:160]))
             self.log("Public check failed: " + traceback.format_exc())
-            self._info("Не удалось проверить публичную страницу")
+            self._info("Не удалось проверить канал. Причина сохранена в настройках.")
 
     def _accept(self, version, message_id, filename):
         try:
@@ -216,6 +256,8 @@ class CentralTikTokWatch(BasePlugin):
             from org.telegram.messenger import ApplicationLoader
             ctx = ApplicationLoader.applicationContext
             manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
+            if hasattr(manager, "areNotificationsEnabled") and not manager.areNotificationsEnabled():
+                raise RuntimeError("Android отключил уведомления AyuGram")
             channel_id = "central_tiktok_watch_updates"
             if Build.VERSION.SDK_INT >= 26:
                 manager.createNotificationChannel(NotificationChannel(
@@ -235,6 +277,9 @@ class CentralTikTokWatch(BasePlugin):
             builder.setContentIntent(pending)
             builder.setAutoCancel(True)
             manager.notify(47150, builder.build())
-        except Exception:
+            self.set_setting("notification_result", "Уведомление отправлено системой Android")
+        except Exception as exc:
+            self.set_setting("notification_result",
+                "Ошибка %s: %s" % (type(exc).__name__, str(exc)[:180]))
             self.log("Android notification failed: " + traceback.format_exc())
-            self._info("Private Plus ARM8 " + version + ": " + CHANNEL_URL)
+            self._info("Ошибка системного уведомления — открой настройки плагина")
